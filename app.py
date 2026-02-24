@@ -17,15 +17,15 @@ indicadores técnicos ou regras operacionais.
 """)
 
 # =========================================================
-# PARÂMETROS FIXOS DO MODELO
+# PARÂMETROS FIXOS
 # =========================================================
 
-TARGET = 0.02   # +2%
-STOP   = -0.01  # -1%
-HORIZON = 5     # 5 pregões
+TARGET = 0.02
+STOP = -0.01
+HORIZON = 5
 
 # =========================================================
-# LISTA FIXA DE ATIVOS (fornecida por você)
+# LISTA FIXA DE ATIVOS (178)
 # =========================================================
 
 ativos_scan = sorted(set([
@@ -79,21 +79,23 @@ def estudar_ativo(ticker, anos):
     closes = df["Close"].values
     highs = df["High"].values
     lows = df["Low"].values
-    dates = df.index
 
-    resultados = []
+    total_janelas = 0
+    wins = 0
+    losses = 0
+
+    max_retorno_lista = []
+    max_drawdown_lista = []
 
     for i in range(len(df) - HORIZON - 1):
 
         entrada = closes[i]
-
         alvo = entrada * (1 + TARGET)
         stop = entrada * (1 + STOP)
 
         ordem = None
-
-        max_retorno = -999.0
-        max_drawdown = 999.0
+        max_ret = -999.0
+        max_dd = 999.0
 
         for j in range(1, HORIZON + 1):
 
@@ -103,57 +105,54 @@ def estudar_ativo(ticker, anos):
             r_max = (h / entrada) - 1
             r_min = (l / entrada) - 1
 
-            if r_max > max_retorno:
-                max_retorno = r_max
+            max_ret = max(max_ret, r_max)
+            max_dd = min(max_dd, r_min)
 
-            if r_min < max_drawdown:
-                max_drawdown = r_min
-
-            if (h >= alvo) and (l <= stop):
+            if h >= alvo and l <= stop:
                 ordem = "ambos"
                 break
-
             if h >= alvo:
                 ordem = "alvo"
                 break
-
             if l <= stop:
                 ordem = "stop"
                 break
 
-        sucesso = 1 if ordem == "alvo" else 0
+        total_janelas += 1
+        max_retorno_lista.append(max_ret)
+        max_drawdown_lista.append(max_dd)
 
-        resultados.append({
-            "data": dates[i],
-            "sucesso": sucesso,
-            "ordem": ordem,
-            "max_retorno": max_retorno,
-            "max_drawdown": max_drawdown
-        })
+        if ordem == "alvo":
+            wins += 1
+        elif ordem == "stop":
+            losses += 1
 
-    if len(resultados) == 0:
+    if total_janelas == 0:
         return None
 
-    r = pd.DataFrame(resultados)
+    prob_win = wins / total_janelas
+    prob_loss = losses / total_janelas
 
-    total = len(r)
-    sucessos = int(r["sucesso"].sum())
-    taxa = sucessos / total
+    retorno_medio_max = np.mean(max_retorno_lista)
+    drawdown_medio = np.mean(max_drawdown_lista)
 
-    retorno_medio_max = r["max_retorno"].mean()
-    drawdown_medio = r["max_drawdown"].mean()
+    # Expectativa matemática usando exatamente +2% e -1%
+    expectativa = prob_win * TARGET + prob_loss * STOP
 
-    payoff = abs(retorno_medio_max / drawdown_medio) if drawdown_medio != 0 else np.nan
+    # Score de lucratividade ajustado por risco e potencial
+    score = expectativa * (retorno_medio_max / TARGET)
 
     ult_close = closes[-1]
 
     return {
         "Ativo": ticker.replace(".SA", ""),
-        "Amostras": total,
-        "Probabilidade_alvo_2pct": taxa,
+        "Amostras": total_janelas,
+        "Prob_Gain_2pct": prob_win,
+        "Prob_Loss_1pct": prob_loss,
+        "Expectativa": expectativa,
         "Retorno_max_médio": retorno_medio_max,
         "Drawdown_médio": drawdown_medio,
-        "Payoff_aproximado": payoff,
+        "Score_classificacao": score,
         "Preço_atual": ult_close
     }
 
@@ -179,36 +178,71 @@ if st.button("Rodar estudo estatístico"):
         st.warning("Nenhum ativo retornou dados suficientes.")
     else:
 
-        df_final = pd.DataFrame(resultados_finais)
+        df = pd.DataFrame(resultados_finais)
 
-        df_final = df_final.sort_values(
-            by="Probabilidade_alvo_2pct",
-            ascending=False
-        )
+        df["Prob_Gain_2pct_%"] = df["Prob_Gain_2pct"] * 100
+        df["Prob_Loss_1pct_%"] = df["Prob_Loss_1pct"] * 100
+        df["Expectativa_%"] = df["Expectativa"] * 100
+        df["Retorno_max_médio_%"] = df["Retorno_max_médio"] * 100
+        df["Drawdown_médio_%"] = df["Drawdown_médio"] * 100
 
-        tabela = df_final.copy()
+        abas = st.tabs(["Tabela completa", "Ranking estatístico (Top 5)"])
 
-        tabela["Probabilidade_alvo_2pct"] = tabela["Probabilidade_alvo_2pct"] * 100
-        tabela["Retorno_max_médio"] = tabela["Retorno_max_médio"] * 100
-        tabela["Drawdown_médio"] = tabela["Drawdown_médio"] * 100
+        with abas[0]:
 
-        tabela = tabela.rename(columns={
-            "Probabilidade_alvo_2pct": "Probabilidade de bater +2% (%)",
-            "Retorno_max_médio": "Máx. retorno médio no período (%)",
-            "Drawdown_médio": "Drawdown médio no período (%)",
-            "Payoff_aproximado": "Payoff médio",
-            "Preço_atual": "Preço atual"
-        })
+            tabela = df[[
+                "Ativo","Amostras",
+                "Prob_Gain_2pct_%","Prob_Loss_1pct_%",
+                "Expectativa_%","Retorno_max_médio_%",
+                "Drawdown_médio_%","Score_classificacao","Preço_atual"
+            ]].sort_values(by="Score_classificacao", ascending=False)
 
-        st.subheader("Resultado – Evento: +2% antes de −1% em até 5 pregões")
+            tabela = tabela.rename(columns={
+                "Prob_Gain_2pct_%": "Prob. bater +2% (%)",
+                "Prob_Loss_1pct_%": "Prob. bater -1% (%)",
+                "Expectativa_%": "Expectativa matemática (%)",
+                "Retorno_max_médio_%": "Máx. retorno médio (%)",
+                "Drawdown_médio_%": "Drawdown médio (%)",
+                "Score_classificacao": "Score estatístico"
+            })
 
-        st.dataframe(tabela, use_container_width=True)
+            st.subheader("Resultados completos")
+            st.dataframe(tabela, use_container_width=True)
 
-        csv = tabela.to_csv(index=False).encode("utf-8")
+            csv = tabela.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Baixar tabela completa",
+                csv,
+                "resultado_prob2x1_completo.csv",
+                "text/csv"
+            )
 
-        st.download_button(
-            "Baixar tabela em CSV",
-            csv,
-            "resultado_prob2x1_universo_fixo.csv",
-            "text/csv"
-        )
+        with abas[1]:
+
+            ranking = df.sort_values(
+                by="Score_classificacao",
+                ascending=False
+            ).head(5)
+
+            ranking = ranking[[
+                "Ativo",
+                "Prob_Gain_2pct_%",
+                "Prob_Loss_1pct_%",
+                "Expectativa_%",
+                "Retorno_max_médio_%",
+                "Drawdown_médio_%",
+                "Score_classificacao"
+            ]]
+
+            ranking = ranking.rename(columns={
+                "Prob_Gain_2pct_%": "Prob. +2% (%)",
+                "Prob_Loss_1pct_%": "Prob. -1% (%)",
+                "Expectativa_%": "Expectativa (%)",
+                "Retorno_max_médio_%": "Máx. retorno médio (%)",
+                "Drawdown_médio_%": "Drawdown médio (%)",
+                "Score_classificacao": "Score estatístico"
+            })
+
+            st.subheader("Top 5 – melhores ativos pelo critério estatístico")
+
+            st.dataframe(ranking, use_container_width=True)
