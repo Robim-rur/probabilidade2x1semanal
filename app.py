@@ -5,34 +5,59 @@ import numpy as np
 from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
-st.title("Scanner Estatístico – Probabilidade de Alta Semanal (+2% / -1%)")
+st.title("Prob2x1 – Scanner Estatístico Semanal (+2% / -1%)")
+
+st.markdown("""
+Este aplicativo executa um estudo estatístico de curto prazo,
+avaliando a probabilidade histórica de um ativo atingir +2% de valorização
+antes de sofrer uma queda de −1%, dentro de uma janela de até 5 pregões.
+
+O estudo é puramente quantitativo e não utiliza setups gráficos,
+indicadores técnicos ou regras operacionais.
+""")
 
 # =========================================================
 # PARÂMETROS FIXOS DO MODELO
 # =========================================================
+
 TARGET = 0.02   # +2%
 STOP   = -0.01  # -1%
 HORIZON = 5     # 5 pregões
 
 # =========================================================
-# LISTA DE ATIVOS (exemplo – você pode expandir)
+# LISTA FIXA DE ATIVOS (fornecida por você)
 # =========================================================
-default_tickers = [
-    "PETR4.SA", "VALE3.SA", "ITUB4.SA", "BBDC4.SA",
-    "BBAS3.SA", "ABEV3.SA", "WEGE3.SA", "SUZB3.SA"
-]
 
-tickers = st.multiselect(
-    "Ativos para análise",
-    options=default_tickers,
-    default=default_tickers
-)
+ativos_scan = sorted(set([
+    "RRRP3.SA","ALOS3.SA","ALPA4.SA","ABEV3.SA","ARZZ3.SA","ASAI3.SA","AZUL4.SA","B3SA3.SA","BBAS3.SA","BBDC3.SA",
+    "BBDC4.SA","BBSE3.SA","BEEF3.SA","BPAC11.SA","BRAP4.SA","BRFS3.SA","BRKM5.SA","CCRO3.SA","CMIG4.SA","CMIN3.SA",
+    "COGN3.SA","CPFE3.SA","CPLE6.SA","CRFB3.SA","CSAN3.SA","CSNA3.SA","CYRE3.SA","DXCO3.SA","EGIE3.SA","ELET3.SA",
+    "ELET6.SA","EMBR3.SA","ENEV3.SA","ENGI11.SA","EQTL3.SA","EZTC3.SA","FLRY3.SA","GGBR4.SA","GOAU4.SA","GOLL4.SA",
+    "HAPV3.SA","HYPE3.SA","ITSA4.SA","ITUB4.SA","JBSS3.SA","KLBN11.SA","LREN3.SA","LWSA3.SA","MGLU3.SA","MRFG3.SA",
+    "MRVE3.SA","MULT3.SA","NTCO3.SA","PETR3.SA","PETR4.SA","PRIO3.SA","RADL3.SA","RAIL3.SA","RAIZ4.SA","RENT3.SA",
+    "RECV3.SA","SANB11.SA","SBSP3.SA","SLCE3.SA","SMTO3.SA","SUZB3.SA","TAEE11.SA","TIMS3.SA","TOTS3.SA","TRPL4.SA",
+    "UGPA3.SA","USIM5.SA","VALE3.SA","VIVT3.SA","VIVA3.SA","WEGE3.SA","YDUQ3.SA","AURE3.SA","BHIA3.SA","CASH3.SA",
+    "CVCB3.SA","DIRR3.SA","ENAT3.SA","GMAT3.SA","IFCM3.SA","INTB3.SA","JHSF3.SA","KEPL3.SA","MOVI3.SA","ORVR3.SA",
+    "PETZ3.SA","PLAS3.SA","POMO4.SA","POSI3.SA","RANI3.SA","RAPT4.SA","STBP3.SA","TEND3.SA","TUPY3.SA",
+    "BRSR6.SA","CXSE3.SA","AAPL34.SA","AMZO34.SA","GOGL34.SA","MSFT34.SA","TSLA34.SA","META34.SA","NFLX34.SA",
+    "NVDC34.SA","MELI34.SA","BABA34.SA","DISB34.SA","PYPL34.SA","JNJB34.SA","PGCO34.SA","KOCH34.SA","VISA34.SA",
+    "WMTB34.SA","NIKE34.SA","ADBE34.SA","AVGO34.SA","CSCO34.SA","COST34.SA","CVSH34.SA","GECO34.SA","GSGI34.SA",
+    "HDCO34.SA","INTC34.SA","JPMC34.SA","MAEL34.SA","MCDP34.SA","MDLZ34.SA","MRCK34.SA","ORCL34.SA","PEP334.SA",
+    "PFIZ34.SA","PMIC34.SA","QCOM34.SA","SBUX34.SA","TGTB34.SA","TMOS34.SA","TXN34.SA","UNHH34.SA","UPSB34.SA",
+    "VZUA34.SA","ABTT34.SA","AMGN34.SA","AXPB34.SA","BAOO34.SA","CATP34.SA","HONB34.SA","BOVA11.SA","IVVB11.SA",
+    "SMAL11.SA","HASH11.SA","GOLD11.SA","GARE11.SA","HGLG11.SA","XPLG11.SA","VILG11.SA","BRCO11.SA","BTLG11.SA",
+    "XPML11.SA","VISC11.SA","HSML11.SA","MALL11.SA","KNRI11.SA","JSRE11.SA","PVBI11.SA","HGRE11.SA","MXRF11.SA",
+    "KNCR11.SA","KNIP11.SA","CPTS11.SA","IRDM11.SA","DIVO11.SA","NDIV11.SA","SPUB11.SA"
+]))
+
+st.write(f"Quantidade de ativos na base: {len(ativos_scan)}")
 
 anos = st.slider("Anos de histórico para o estudo", 5, 12, 10)
 
 # =========================================================
-# FUNÇÃO PRINCIPAL
+# FUNÇÃO DE ESTUDO
 # =========================================================
+
 def estudar_ativo(ticker, anos):
 
     fim = datetime.today()
@@ -42,13 +67,15 @@ def estudar_ativo(ticker, anos):
         ticker,
         start=inicio.strftime("%Y-%m-%d"),
         end=fim.strftime("%Y-%m-%d"),
-        progress=False
+        progress=False,
+        auto_adjust=False
     )
 
     if df.empty or len(df) < 200:
         return None
 
     df = df.dropna()
+
     closes = df["Close"].values
     highs = df["High"].values
     lows = df["Low"].values
@@ -63,12 +90,10 @@ def estudar_ativo(ticker, anos):
         alvo = entrada * (1 + TARGET)
         stop = entrada * (1 + STOP)
 
-        bateu_alvo = False
-        bateu_stop = False
         ordem = None
 
-        max_retorno = -999
-        max_drawdown = 999
+        max_retorno = -999.0
+        max_drawdown = 999.0
 
         for j in range(1, HORIZON + 1):
 
@@ -78,20 +103,21 @@ def estudar_ativo(ticker, anos):
             r_max = (h / entrada) - 1
             r_min = (l / entrada) - 1
 
-            max_retorno = max(max_retorno, r_max)
-            max_drawdown = min(max_drawdown, r_min)
+            if r_max > max_retorno:
+                max_retorno = r_max
+
+            if r_min < max_drawdown:
+                max_drawdown = r_min
 
             if (h >= alvo) and (l <= stop):
                 ordem = "ambos"
                 break
 
             if h >= alvo:
-                bateu_alvo = True
                 ordem = "alvo"
                 break
 
             if l <= stop:
-                bateu_stop = True
                 ordem = "stop"
                 break
 
@@ -111,7 +137,7 @@ def estudar_ativo(ticker, anos):
     r = pd.DataFrame(resultados)
 
     total = len(r)
-    sucessos = r["sucesso"].sum()
+    sucessos = int(r["sucesso"].sum())
     taxa = sucessos / total
 
     retorno_medio_max = r["max_retorno"].mean()
@@ -134,16 +160,20 @@ def estudar_ativo(ticker, anos):
 # =========================================================
 # EXECUÇÃO
 # =========================================================
+
 if st.button("Rodar estudo estatístico"):
 
     resultados_finais = []
 
-    with st.spinner("Processando..."):
+    with st.spinner("Processando ativos..."):
 
-        for t in tickers:
-            r = estudar_ativo(t, anos)
-            if r is not None:
-                resultados_finais.append(r)
+        for t in ativos_scan:
+            try:
+                r = estudar_ativo(t, anos)
+                if r is not None:
+                    resultados_finais.append(r)
+            except Exception:
+                pass
 
     if len(resultados_finais) == 0:
         st.warning("Nenhum ativo retornou dados suficientes.")
@@ -155,8 +185,6 @@ if st.button("Rodar estudo estatístico"):
             by="Probabilidade_alvo_2pct",
             ascending=False
         )
-
-        st.subheader("Resultado – Estatística do evento (+2% antes de -1% em até 5 pregões)")
 
         tabela = df_final.copy()
 
@@ -172,25 +200,15 @@ if st.button("Rodar estudo estatístico"):
             "Preço_atual": "Preço atual"
         })
 
-        st.dataframe(
-            tabela,
-            use_container_width=True
-        )
+        st.subheader("Resultado – Evento: +2% antes de −1% em até 5 pregões")
 
-        st.markdown("### Interpretação das colunas")
-        st.markdown("""
-- **Amostras** → quantidade de janelas históricas testadas.
-- **Probabilidade de bater +2% (%)** → percentual de vezes em que o preço atingiu +2% antes de -1% em até 5 pregões.
-- **Máx. retorno médio no período (%)** → média do melhor retorno observado dentro da janela de 5 dias.
-- **Drawdown médio no período (%)** → média da pior variação negativa dentro da janela.
-- **Payoff médio** → relação entre retorno potencial médio e risco médio.
-- **Preço atual** → último fechamento.
-        """)
+        st.dataframe(tabela, use_container_width=True)
 
         csv = tabela.to_csv(index=False).encode("utf-8")
+
         st.download_button(
             "Baixar tabela em CSV",
             csv,
-            "estatistica_2pct_1pct.csv",
+            "resultado_prob2x1_universo_fixo.csv",
             "text/csv"
         )
