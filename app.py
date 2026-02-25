@@ -65,10 +65,6 @@ def dmi_adx(df, n=14):
 
     return plus_di, minus_di, adx
 
-# ==========================================================
-# SAR PARABÓLICO (IMPLEMENTAÇÃO CORRIGIDA)
-# ==========================================================
-
 def parabolic_sar(df, step=0.02, max_step=0.2):
 
     high = df['High'].values
@@ -139,62 +135,75 @@ def processar():
 
             df = df.dropna()
 
-            df['EMA69'] = ema(df['Close'], 69)
+            df["EMA69"] = ema(df["Close"], 69)
 
             pdi, mdi, adx = dmi_adx(df)
+            df["PDI"] = pdi
+            df["MDI"] = mdi
+            df["ADX"] = adx
 
-            df['PDI'] = pdi
-            df['MDI'] = mdi
-            df['ADX'] = adx
+            df["SAR"] = parabolic_sar(df)
 
-            df['SAR'] = parabolic_sar(df)
+            # -------------------------
+            # SEMANAL CORRETO
+            # -------------------------
 
-            weekly = df.resample('W-FRI').last()
-            weekly['EMA69_W'] = ema(weekly['Close'], 69)
+            weekly = df.resample("W-FRI").last()
+            weekly["EMA69_W"] = ema(weekly["Close"], 69)
 
-            df = df.merge(weekly[['EMA69_W']], left_index=True, right_index=True, how='left')
-            df['EMA69_W'] = df['EMA69_W'].ffill()
+            weekly["trend_ok"] = weekly["Close"] > weekly["EMA69_W"]
 
-            df['setup_principal'] = (
-                (df['Close'] > df['EMA69']) &
-                (df['Close'] > df['EMA69_W']) &
-                (df['PDI'] > df['MDI'])
+            df["trend_semanal"] = weekly["trend_ok"].reindex(df.index, method="ffill")
+
+            # -------------------------
+            # SETUPS
+            # -------------------------
+
+            df["setup_principal"] = (
+                (df["Close"] > df["EMA69"]) &
+                (df["trend_semanal"] == True) &
+                (df["PDI"] > df["MDI"])
             )
 
-            df['setup_sar'] = (
-                (df['Close'] > df['SAR']) &
-                (df['Close'] > df['EMA69']) &
-                (df['Close'] > df['EMA69_W'])
+            df["setup_sar"] = (
+                (df["Close"] > df["SAR"]) &
+                (df["Close"] > df["EMA69"]) &
+                (df["trend_semanal"] == True)
             )
 
-            df['ret_futuro'] = df['Close'].shift(-10) / df['Close'] - 1
+            df["ret_futuro"] = df["Close"].shift(-10) / df["Close"] - 1
 
             for i in range(len(df) - 10):
 
-                if df['setup_principal'].iloc[i]:
-                    registros_setup.append(df['ret_futuro'].iloc[i])
+                if df["setup_principal"].iloc[i]:
+                    registros_setup.append(df["ret_futuro"].iloc[i])
 
-                if df['setup_sar'].iloc[i]:
-                    registros_sar.append(df['ret_futuro'].iloc[i])
+                if df["setup_sar"].iloc[i]:
+                    registros_sar.append(df["ret_futuro"].iloc[i])
 
-            if df['setup_principal'].iloc[-1]:
+            if df["setup_principal"].iloc[-1]:
                 hoje_setup.append(ticker)
 
-            if df['setup_sar'].iloc[-1]:
+            if df["setup_sar"].iloc[-1]:
                 hoje_sar.append(ticker)
 
         except:
-            pass
+            continue
 
     return registros_setup, registros_sar, hoje_setup, hoje_sar
+
 
 with st.spinner("Processando histórico..."):
     reg_setup, reg_sar, hoje_setup, hoje_sar = processar()
 
+# ==========================================================
+# RESUMO
+# ==========================================================
+
 def resumo(reg):
 
     if len(reg) == 0:
-        return 0, 0, 0
+        return 0.0, 0.0, 0.0
 
     s = pd.Series(reg).dropna()
 
@@ -204,13 +213,13 @@ def resumo(reg):
 
     return win, ret_medio, perda_media
 
+
 win_s, ret_s, dd_s = resumo(reg_setup)
 win_sar, ret_sar, dd_sar = resumo(reg_sar)
 
 col1, col2 = st.columns(2)
 
 with col1:
-
     st.subheader("Setup principal (seu setup)")
     st.metric("Probabilidade histórica de ganho (10 pregões)", f"{win_s:.2f}%")
     st.metric("Retorno médio", f"{ret_s:.2f}%")
@@ -219,7 +228,6 @@ with col1:
     st.dataframe(pd.DataFrame({"Ativos": hoje_setup}), use_container_width=True)
 
 with col2:
-
     st.subheader("Setup SAR Parabólico")
     st.metric("Probabilidade histórica de ganho (10 pregões)", f"{win_sar:.2f}%")
     st.metric("Retorno médio", f"{ret_sar:.2f}%")
@@ -243,10 +251,9 @@ st.subheader("Diagnóstico de regime")
 st.write("Setup principal:", regime(win_s))
 st.write("Setup SAR:", regime(win_sar))
 
-st.info(
-"""
+st.info("""
 Este app não gera sinal de entrada.
-Ele mede se o ambiente favorece o seu setup principal
-e o setup com SAR parabólico, usando horizonte de 10 pregões.
-"""
-)
+Ele mede se o ambiente histórico favorece
+o seu setup principal e o setup com SAR parabólico,
+usando horizonte de 10 pregões.
+""")
