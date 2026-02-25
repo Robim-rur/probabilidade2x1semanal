@@ -5,12 +5,12 @@ import numpy as np
 from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
-st.title("Prob2x1 – Scanner Estatístico Multicenário")
+st.title("Prob2x1 – Scanner Estatístico Multicenário (janela 10 pregões)")
 
 st.markdown("""
 Este aplicativo executa um estudo estatístico de curto prazo,
 simulando diferentes relações de ganho e perda dentro de uma
-janela máxima de 5 pregões.
+janela máxima de 10 pregões.
 
 O modelo é totalmente independente de setups gráficos e
 indicadores técnicos.
@@ -43,10 +43,10 @@ ativos_scan = sorted(set([
 ]))
 
 # ============================================================
-# PARÂMETROS GERAIS
+# PARÂMETROS
 # ============================================================
 
-MAX_DAYS = 5
+MAX_DAYS = 10
 YEARS_BACK = 10
 
 CENARIOS = {
@@ -57,7 +57,7 @@ CENARIOS = {
 }
 
 # ============================================================
-# SIMULAÇÃO
+# FUNÇÕES
 # ============================================================
 
 @st.cache_data(show_spinner=False)
@@ -138,7 +138,7 @@ if st.button("Rodar estudo estatístico"):
 
         try:
             df = baixar_dados(ticker, start, end)
-            if df is None or len(df) < 80:
+            if df is None or len(df) < 120:
                 continue
 
             df = df.dropna()
@@ -177,7 +177,7 @@ if st.button("Rodar estudo estatístico"):
 
         with aba:
 
-            st.subheader(f"Cenário {nome_cenario}  |  alvo {int(target*100)}%  stop {int(stop*100)}%")
+            st.subheader(f"Cenário {nome_cenario} | janela {MAX_DAYS} pregões")
 
             if df_res.empty:
                 st.warning("Nenhum ativo apresentou trades válidos para este cenário.")
@@ -185,10 +185,8 @@ if st.button("Rodar estudo estatístico"):
 
             df_filtrado = df_res[df_res["Prob. Gain (%)"] > df_res["Prob. Loss (%)"]].copy()
 
-            st.markdown("### Base completa (após filtro p_gain > p_loss)")
-
             if df_filtrado.empty:
-                st.warning("Após o filtro estatístico, nenhum ativo permaneceu neste cenário.")
+                st.warning("Após o filtro p_gain > p_loss, nenhum ativo permaneceu neste cenário.")
                 continue
 
             df_filtrado = df_filtrado.sort_values(
@@ -196,23 +194,14 @@ if st.button("Rodar estudo estatístico"):
                 ascending=[False, False, True]
             )
 
+            st.markdown("### Base completa (após filtro)")
             st.dataframe(df_filtrado, use_container_width=True)
 
             st.markdown("### Ranking estatístico – Top 5")
+            st.dataframe(df_filtrado.head(5), use_container_width=True)
 
-            top5 = df_filtrado.head(5)
-
-            if top5.empty:
-                st.warning("Não foi possível formar um Top 5 para este cenário.")
-            else:
-                st.dataframe(top5, use_container_width=True)
-
-            st.caption("""
-Classificação:
-1. Maior expectativa semanal
-2. Maior probabilidade de gain
-3. Menor probabilidade de loss
-
+            st.caption(f"""
+Janela máxima: {MAX_DAYS} pregões
 Filtro obrigatório: Prob. Gain > Prob. Loss
-Janela máxima: 5 pregões
+Classificação: expectativa, probabilidade de ganho e menor probabilidade de perda.
 """)
