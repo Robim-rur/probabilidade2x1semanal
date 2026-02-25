@@ -5,18 +5,19 @@ import numpy as np
 from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
-st.title("Prob2x1 – Scanner Estatístico Semanal (+2% / -1%)")
+st.title("Prob2x1 – Scanner Estatístico Multicenário")
 
 st.markdown("""
-Este aplicativo realiza um estudo estatístico sobre ativos da B3 e BDRs,
-avaliando a probabilidade histórica de um ativo atingir +2% de valorização
-antes de sofrer uma queda de −1%, dentro de uma janela máxima de 5 pregões.
+Este aplicativo executa um estudo estatístico de curto prazo,
+simulando diferentes relações de ganho e perda dentro de uma
+janela máxima de 5 pregões.
 
-O modelo é puramente estatístico e não utiliza setups gráficos.
+O modelo é totalmente independente de setups gráficos e
+indicadores técnicos.
 """)
 
 # ============================================================
-# LISTA FIXA DOS ATIVOS (178)
+# LISTA FIXA DOS ATIVOS
 # ============================================================
 
 ativos_scan = sorted(set([
@@ -42,38 +43,28 @@ ativos_scan = sorted(set([
 ]))
 
 # ============================================================
-# PARÂMETROS FIXOS DO ESTUDO
+# PARÂMETROS GERAIS
 # ============================================================
 
-TARGET = 0.02
-STOP = 0.01
 MAX_DAYS = 5
 YEARS_BACK = 10
 
+CENARIOS = {
+    "2% x 1%": (0.02, 0.01),
+    "3% x 2%": (0.03, 0.02),
+    "6% x 4%": (0.06, 0.04),
+    "8% x 5%": (0.08, 0.05)
+}
+
 # ============================================================
-# FUNÇÃO DE SIMULAÇÃO
+# SIMULAÇÃO
 # ============================================================
 
-def simular_ativo(ticker):
+@st.cache_data(show_spinner=False)
+def baixar_dados(ticker, start, end):
+    return yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
 
-    end = datetime.today()
-    start = end - timedelta(days=YEARS_BACK * 365)
-
-    try:
-        df = yf.download(
-            ticker,
-            start=start,
-            end=end,
-            progress=False,
-            auto_adjust=False
-        )
-    except:
-        return None
-
-    if df is None or len(df) < 50:
-        return None
-
-    df = df.dropna()
+def simular_ativo(df, target, stop):
 
     wins = 0
     losses = 0
@@ -86,9 +77,8 @@ def simular_ativo(ticker):
     for i in range(len(df) - MAX_DAYS - 1):
 
         entry = closes[i]
-
-        alvo = entry * (1 + TARGET)
-        stop = entry * (1 - STOP)
+        alvo = entry * (1 + target)
+        stop_p = entry * (1 - stop)
 
         resultado = None
 
@@ -96,8 +86,7 @@ def simular_ativo(ticker):
 
             idx = i + j
 
-            if highs[idx] >= alvo and lows[idx] <= stop:
-                # empate intrabar -> considera stop primeiro (pior cenário)
+            if highs[idx] >= alvo and lows[idx] <= stop_p:
                 resultado = "loss"
                 break
 
@@ -105,7 +94,7 @@ def simular_ativo(ticker):
                 resultado = "win"
                 break
 
-            if lows[idx] <= stop:
+            if lows[idx] <= stop_p:
                 resultado = "loss"
                 break
 
@@ -122,21 +111,14 @@ def simular_ativo(ticker):
     p_win = wins / trades
     p_loss = losses / trades
 
-    expectancy = (p_win * TARGET) - (p_loss * STOP)
+    expectancy = (p_win * target) - (p_loss * stop)
 
     if p_loss > 0:
-        profit_factor = (p_win * TARGET) / (p_loss * STOP)
+        profit_factor = (p_win * target) / (p_loss * stop)
     else:
         profit_factor = np.inf
 
-    return {
-        "Ativo": ticker.replace(".SA", ""),
-        "Trades": trades,
-        "p_win": p_win,
-        "p_loss": p_loss,
-        "Expectancy": expectancy,
-        "Profit_Factor": profit_factor
-    }
+    return p_win, p_loss, expectancy, profit_factor, trades
 
 
 # ============================================================
@@ -145,104 +127,92 @@ def simular_ativo(ticker):
 
 if st.button("Rodar estudo estatístico"):
 
-    resultados = []
+    end = datetime.today()
+    start = end - timedelta(days=YEARS_BACK * 365)
+
+    dados = {}
 
     barra = st.progress(0)
 
     for i, ticker in enumerate(ativos_scan):
-        r = simular_ativo(ticker)
-        if r:
-            resultados.append(r)
+
+        try:
+            df = baixar_dados(ticker, start, end)
+            if df is None or len(df) < 80:
+                continue
+
+            df = df.dropna()
+            dados[ticker] = df
+
+        except:
+            pass
+
         barra.progress((i + 1) / len(ativos_scan))
 
-    if len(resultados) == 0:
-        st.error("Nenhum ativo retornou dados válidos.")
-        st.stop()
+    abas = st.tabs([f"Cenário {nome}" for nome in CENARIOS.keys()])
 
-    df = pd.DataFrame(resultados)
+    for aba, (nome_cenario, (target, stop)) in zip(abas, CENARIOS.items()):
 
-    # ============================================================
-    # FILTRO OBRIGATÓRIO
-    # ============================================================
+        resultados = []
 
-    df_filtrado = df[df["p_win"] > df["p_loss"]].copy()
+        for ticker, df in dados.items():
 
-    # ============================================================
-    # RANKING FINAL
-    # ============================================================
+            r = simular_ativo(df, target, stop)
 
-    df_ranking = df_filtrado.sort_values(
-        by=["Expectancy", "p_win", "p_loss"],
-        ascending=[False, False, True]
-    )
+            if r is None:
+                continue
 
-    top5 = df_ranking.head(5).copy()
+            p_win, p_loss, expectancy, profit_factor, trades = r
 
-    # ============================================================
-    # FORMATAÇÃO
-    # ============================================================
+            resultados.append({
+                "Ativo": ticker.replace(".SA", ""),
+                "Trades": trades,
+                "Prob. Gain (%)": p_win * 100,
+                "Prob. Loss (%)": p_loss * 100,
+                "Expectativa semanal (%)": expectancy * 100,
+                "Profit Factor": profit_factor
+            })
 
-    for col in ["p_win", "p_loss"]:
-        df[col] = df[col] * 100
+        df_res = pd.DataFrame(resultados)
 
-    df["Expectancy_%"] = df["Expectancy"] * 100
-    df["Profit_Factor"] = df["Profit_Factor"]
+        with aba:
 
-    df_view = df[[
-        "Ativo", "Trades", "p_win", "p_loss", "Expectancy_%", "Profit_Factor"
-    ]].copy()
+            st.subheader(f"Cenário {nome_cenario}  |  alvo {int(target*100)}%  stop {int(stop*100)}%")
 
-    df_view = df_view.rename(columns={
-        "p_win": "Prob. +2% (%)",
-        "p_loss": "Prob. -1% (%)",
-        "Expectancy_%": "Expectativa semanal (%)",
-        "Profit_Factor": "Profit Factor"
-    })
+            if df_res.empty:
+                st.warning("Nenhum ativo apresentou trades válidos para este cenário.")
+                continue
 
-    top5_view = df_ranking.head(5).copy()
+            df_filtrado = df_res[df_res["Prob. Gain (%)"] > df_res["Prob. Loss (%)"]].copy()
 
-    for col in ["p_win", "p_loss"]:
-        top5_view[col] = top5_view[col] * 100
+            st.markdown("### Base completa (após filtro p_gain > p_loss)")
 
-    top5_view["Expectancy_%"] = top5_view["Expectancy"] * 100
+            if df_filtrado.empty:
+                st.warning("Após o filtro estatístico, nenhum ativo permaneceu neste cenário.")
+                continue
 
-    top5_view = top5_view[[
-        "Ativo", "Trades", "p_win", "p_loss", "Expectancy_%", "Profit_Factor"
-    ]]
+            df_filtrado = df_filtrado.sort_values(
+                by=["Expectativa semanal (%)", "Prob. Gain (%)", "Prob. Loss (%)"],
+                ascending=[False, False, True]
+            )
 
-    top5_view = top5_view.rename(columns={
-        "p_win": "Prob. +2% (%)",
-        "p_loss": "Prob. -1% (%)",
-        "Expectancy_%": "Expectativa semanal (%)",
-        "Profit_Factor": "Profit Factor"
-    })
+            st.dataframe(df_filtrado, use_container_width=True)
 
-    aba1, aba2 = st.tabs([
-        "Base completa dos ativos",
-        "Ranking estatístico – Top 5"
-    ])
+            st.markdown("### Ranking estatístico – Top 5")
 
-    with aba1:
-        st.subheader("Resultado completo do estudo estatístico")
-        st.dataframe(
-            df_view.sort_values(
-                by="Expectativa semanal (%)",
-                ascending=False
-            ),
-            use_container_width=True
-        )
+            top5 = df_filtrado.head(5)
 
-    with aba2:
-        st.subheader("Top 5 – maior expectativa estatística semanal (+2% / -1%)")
-        st.dataframe(top5_view, use_container_width=True)
+            if top5.empty:
+                st.warning("Não foi possível formar um Top 5 para este cenário.")
+            else:
+                st.dataframe(top5, use_container_width=True)
 
-        st.markdown("""
-Critério de classificação:
+            st.caption("""
+Classificação:
+1. Maior expectativa semanal
+2. Maior probabilidade de gain
+3. Menor probabilidade de loss
 
-1. Maior expectativa estatística semanal  
-2. Maior probabilidade de atingir +2%  
-3. Menor probabilidade de atingir −1%  
-
-Filtro obrigatório:
-Probabilidade de ganho maior que a probabilidade de perda.
+Filtro obrigatório: Prob. Gain > Prob. Loss
+Janela máxima: 5 pregões
 """)
