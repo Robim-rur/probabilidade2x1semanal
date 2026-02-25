@@ -5,11 +5,11 @@ import numpy as np
 from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
-st.title("Ranking estatístico – maior probabilidade de gain (≈ 2 semanas)")
+st.title("Ranking estatístico – maior probabilidade de gain (robusto no tempo)")
 
 st.caption(
-    "Ranking estatístico de curto prazo priorizando a MAIOR probabilidade de gain. "
-    "Somente combinações onde a probabilidade de gain é maior que a de loss são consideradas."
+    "Ranking estatístico priorizando MAIOR probabilidade de gain. "
+    "Somente pares gain/loss com robustez temporal (expectancy positiva em pelo menos 4 de 5 blocos de tempo)."
 )
 
 # ============================================================
@@ -48,6 +48,9 @@ MIN_TRADES = 60
 
 GAIN_GRID = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
 LOSS_GRID = [0.005, 0.01, 0.015, 0.02, 0.03]
+
+N_BLOCOS = 5
+MIN_BLOCOS_POSITIVOS = 4
 
 # ============================================================
 # FUNÇÕES
@@ -109,11 +112,44 @@ def simular(df, gain, loss):
     return p_win, p_loss, expectancy, trades
 
 
+def validar_robustez(df, gain, loss):
+
+    tamanho = len(df)
+    bloco_len = tamanho // N_BLOCOS
+
+    blocos_positivos = 0
+
+    for i in range(N_BLOCOS):
+
+        ini = i * bloco_len
+        fim = (i + 1) * bloco_len if i < N_BLOCOS - 1 else tamanho
+
+        df_bloco = df.iloc[ini:fim]
+
+        if len(df_bloco) < 100:
+            continue
+
+        r = simular(df_bloco, gain, loss)
+
+        if r is None:
+            continue
+
+        p_win, p_loss, expectancy, trades = r
+
+        if trades < 20:
+            continue
+
+        if expectancy > 0:
+            blocos_positivos += 1
+
+    return blocos_positivos >= MIN_BLOCOS_POSITIVOS
+
+
 # ============================================================
 # EXECUÇÃO
 # ============================================================
 
-if st.button("Gerar ranking (priorizando probabilidade de gain)"):
+if st.button("Gerar ranking robusto (maior probabilidade de gain)"):
 
     end = datetime.today()
     start = end - timedelta(days=YEARS_BACK * 365)
@@ -127,7 +163,7 @@ if st.button("Gerar ranking (priorizando probabilidade de gain)"):
         try:
             df = baixar_dados(ticker, start, end)
 
-            if df is None or len(df) < 150:
+            if df is None or len(df) < 300:
                 continue
 
             df = df[["Open", "High", "Low", "Close"]].dropna()
@@ -151,6 +187,12 @@ if st.button("Gerar ranking (priorizando probabilidade de gain)"):
                 if gain <= loss:
                     continue
 
+                # ----------------------------
+                # robustez temporal
+                # ----------------------------
+                if not validar_robustez(df, gain, loss):
+                    continue
+
                 r = simular(df, gain, loss)
 
                 if r is None:
@@ -161,47 +203,33 @@ if st.button("Gerar ranking (priorizando probabilidade de gain)"):
                 if trades < MIN_TRADES:
                     continue
 
-                # REGRA NOVA
+                # regra principal
                 if p_win <= p_loss:
                     continue
 
+                candidato = {
+                    "Ativo": ticker.replace(".SA", ""),
+                    "Gain (%)": gain * 100,
+                    "Loss (%)": loss * 100,
+                    "Prob gain em 2 semanas (%)": p_win * 100,
+                    "Prob loss em 2 semanas (%)": p_loss * 100,
+                    "expectancy": expectancy,
+                    "Trades": trades
+                }
+
                 if melhor is None:
-                    melhor = {
-                        "Ativo": ticker.replace(".SA", ""),
-                        "Gain (%)": gain * 100,
-                        "Loss (%)": loss * 100,
-                        "Prob gain em 2 semanas (%)": p_win * 100,
-                        "Prob loss em 2 semanas (%)": p_loss * 100,
-                        "expectancy": expectancy,
-                        "Trades": trades
-                    }
+                    melhor = candidato
                 else:
                     if p_win > melhor["Prob gain em 2 semanas (%)"] / 100:
-                        melhor = {
-                            "Ativo": ticker.replace(".SA", ""),
-                            "Gain (%)": gain * 100,
-                            "Loss (%)": loss * 100,
-                            "Prob gain em 2 semanas (%)": p_win * 100,
-                            "Prob loss em 2 semanas (%)": p_loss * 100,
-                            "expectancy": expectancy,
-                            "Trades": trades
-                        }
+                        melhor = candidato
                     elif np.isclose(p_win, melhor["Prob gain em 2 semanas (%)"] / 100) and expectancy > melhor["expectancy"]:
-                        melhor = {
-                            "Ativo": ticker.replace(".SA", ""),
-                            "Gain (%)": gain * 100,
-                            "Loss (%)": loss * 100,
-                            "Prob gain em 2 semanas (%)": p_win * 100,
-                            "Prob loss em 2 semanas (%)": p_loss * 100,
-                            "expectancy": expectancy,
-                            "Trades": trades
-                        }
+                        melhor = candidato
 
         if melhor is not None:
             resultados.append(melhor)
 
     if len(resultados) == 0:
-        st.error("Nenhum ativo apresentou probabilidade de gain maior que a de loss.")
+        st.error("Nenhum ativo apresentou robustez temporal suficiente.")
         st.stop()
 
     df = pd.DataFrame(resultados)
@@ -214,7 +242,9 @@ if st.button("Gerar ranking (priorizando probabilidade de gain)"):
     melhor_ativo = df.iloc[0]
 
     st.success(
-        f'''Melhor ativo hoje para abrir operação: {melhor_ativo["Ativo"]}
+        f'''Melhor ativo hoje para abrir operação:
+
+{melhor_ativo["Ativo"]}
 
 Gain: {melhor_ativo["Gain (%)"]:.2f}%
 Loss: {melhor_ativo["Loss (%)"]:.2f}%
@@ -224,14 +254,13 @@ Probabilidade de gain: {melhor_ativo["Prob gain em 2 semanas (%)"]:.1f}%
 Probabilidade de loss: {melhor_ativo["Prob loss em 2 semanas (%)"]:.1f}%'''
     )
 
-    st.subheader("Ranking – maior probabilidade de gain (do melhor para o pior)")
+    st.subheader("Ranking – maior probabilidade de gain (robusto no tempo)")
 
     df_exibicao = df.drop(columns=["expectancy"])
 
     st.dataframe(df_exibicao, use_container_width=True)
 
     st.caption(
-        "Ranking estatístico priorizando probabilidade de gain. "
-        "Somente combinações com P(gain) > P(loss). "
-        "Janela máxima de 10 pregões (~2 semanas)."
+        "Critério de robustez: expectancy positiva em pelo menos 4 de 5 blocos do histórico. "
+        "Ranking priorizado por probabilidade de gain."
     )
