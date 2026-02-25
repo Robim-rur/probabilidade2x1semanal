@@ -5,19 +5,18 @@ import numpy as np
 from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
-st.title("Prob2x1 – Scanner Estatístico Multicenário (janela 10 pregões)")
+st.title("Scanner Estatístico – Otimização de Gain/Loss por Ativo")
 
 st.markdown("""
-Este aplicativo executa um estudo estatístico de curto prazo,
-simulando diferentes relações de ganho e perda dentro de uma
-janela máxima de 10 pregões.
+Este aplicativo realiza uma busca automática pelo melhor par de
+gain (%) e loss (%) para cada ativo, maximizando a expectativa estatística
+em um horizonte de curto prazo.
 
-O modelo é totalmente independente de setups gráficos e
-indicadores técnicos.
+O modelo é totalmente estatístico e não utiliza setups gráficos.
 """)
 
 # ============================================================
-# LISTA FIXA DOS ATIVOS
+# LISTA FIXA DOS 178 ATIVOS
 # ============================================================
 
 ativos_scan = sorted(set([
@@ -43,18 +42,16 @@ ativos_scan = sorted(set([
 ]))
 
 # ============================================================
-# PARÂMETROS
+# PARÂMETROS DO ESTUDO
 # ============================================================
 
 MAX_DAYS = 10
 YEARS_BACK = 10
+MIN_TRADES = 60
 
-CENARIOS = {
-    "2% x 1%": (0.02, 0.01),
-    "3% x 2%": (0.03, 0.02),
-    "6% x 4%": (0.06, 0.04),
-    "8% x 5%": (0.08, 0.05)
-}
+# Grid de busca
+GAIN_GRID = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
+LOSS_GRID = [0.005, 0.01, 0.015, 0.02, 0.03]
 
 # ============================================================
 # FUNÇÕES
@@ -64,7 +61,7 @@ CENARIOS = {
 def baixar_dados(ticker, start, end):
     return yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
 
-def simular_ativo(df, target, stop):
+def simular(df, gain, loss):
 
     wins = 0
     losses = 0
@@ -77,8 +74,8 @@ def simular_ativo(df, target, stop):
     for i in range(len(df) - MAX_DAYS - 1):
 
         entry = closes[i]
-        alvo = entry * (1 + target)
-        stop_p = entry * (1 - stop)
+        alvo = entry * (1 + gain)
+        stop = entry * (1 - loss)
 
         resultado = None
 
@@ -86,7 +83,7 @@ def simular_ativo(df, target, stop):
 
             idx = i + j
 
-            if highs[idx] >= alvo and lows[idx] <= stop_p:
+            if highs[idx] >= alvo and lows[idx] <= stop:
                 resultado = "loss"
                 break
 
@@ -94,7 +91,7 @@ def simular_ativo(df, target, stop):
                 resultado = "win"
                 break
 
-            if lows[idx] <= stop_p:
+            if lows[idx] <= stop:
                 resultado = "loss"
                 break
 
@@ -111,37 +108,38 @@ def simular_ativo(df, target, stop):
     p_win = wins / trades
     p_loss = losses / trades
 
-    expectancy = (p_win * target) - (p_loss * stop)
+    expectancy = p_win * gain - p_loss * loss
 
     if p_loss > 0:
-        profit_factor = (p_win * target) / (p_loss * stop)
+        profit_factor = (p_win * gain) / (p_loss * loss)
     else:
         profit_factor = np.inf
 
     return p_win, p_loss, expectancy, profit_factor, trades
 
-
 # ============================================================
 # EXECUÇÃO
 # ============================================================
 
-if st.button("Rodar estudo estatístico"):
+if st.button("Rodar otimização estatística"):
 
     end = datetime.today()
     start = end - timedelta(days=YEARS_BACK * 365)
 
     dados = {}
 
-    barra = st.progress(0)
+    barra = st.progress(0.0)
 
     for i, ticker in enumerate(ativos_scan):
 
         try:
             df = baixar_dados(ticker, start, end)
-            if df is None or len(df) < 120:
+
+            if df is None or len(df) < 150:
                 continue
 
-            df = df.dropna()
+            df = df[["Open","High","Low","Close"]].dropna()
+
             dados[ticker] = df
 
         except:
@@ -149,59 +147,89 @@ if st.button("Rodar estudo estatístico"):
 
         barra.progress((i + 1) / len(ativos_scan))
 
-    abas = st.tabs([f"Cenário {nome}" for nome in CENARIOS.keys()])
+    resultados_finais = []
 
-    for aba, (nome_cenario, (target, stop)) in zip(abas, CENARIOS.items()):
+    for ticker, df in dados.items():
 
-        resultados = []
+        melhor = None
 
-        for ticker, df in dados.items():
+        for gain in GAIN_GRID:
+            for loss in LOSS_GRID:
 
-            r = simular_ativo(df, target, stop)
+                if gain <= loss:
+                    continue
 
-            if r is None:
-                continue
+                r = simular(df, gain, loss)
 
-            p_win, p_loss, expectancy, profit_factor, trades = r
+                if r is None:
+                    continue
 
-            resultados.append({
-                "Ativo": ticker.replace(".SA", ""),
-                "Trades": trades,
-                "Prob. Gain (%)": p_win * 100,
-                "Prob. Loss (%)": p_loss * 100,
-                "Expectativa semanal (%)": expectancy * 100,
-                "Profit Factor": profit_factor
-            })
+                p_win, p_loss, expectancy, pf, trades = r
 
-        df_res = pd.DataFrame(resultados)
+                if trades < MIN_TRADES:
+                    continue
 
-        with aba:
+                # filtro mínimo de sanidade
+                if p_win <= p_loss:
+                    continue
 
-            st.subheader(f"Cenário {nome_cenario} | janela {MAX_DAYS} pregões")
+                if melhor is None or expectancy > melhor["Expectancy"]:
 
-            if df_res.empty:
-                st.warning("Nenhum ativo apresentou trades válidos para este cenário.")
-                continue
+                    melhor = {
+                        "Ativo": ticker.replace(".SA", ""),
+                        "Melhor gain (%)": gain * 100,
+                        "Melhor loss (%)": loss * 100,
+                        "Prob. gain (%)": p_win * 100,
+                        "Prob. loss (%)": p_loss * 100,
+                        "Expectancy": expectancy,
+                        "Profit Factor": pf,
+                        "Trades": trades
+                    }
 
-            df_filtrado = df_res[df_res["Prob. Gain (%)"] > df_res["Prob. Loss (%)"]].copy()
+        if melhor is not None:
+            resultados_finais.append(melhor)
 
-            if df_filtrado.empty:
-                st.warning("Após o filtro p_gain > p_loss, nenhum ativo permaneceu neste cenário.")
-                continue
+    if len(resultados_finais) == 0:
+        st.error("Nenhum ativo apresentou combinações estatísticas válidas.")
+        st.stop()
 
-            df_filtrado = df_filtrado.sort_values(
-                by=["Expectativa semanal (%)", "Prob. Gain (%)", "Prob. Loss (%)"],
-                ascending=[False, False, True]
-            )
+    df_final = pd.DataFrame(resultados_finais)
 
-            st.markdown("### Base completa (após filtro)")
-            st.dataframe(df_filtrado, use_container_width=True)
+    df_final["Expectativa (%)"] = df_final["Expectancy"] * 100
 
-            st.markdown("### Ranking estatístico – Top 5")
-            st.dataframe(df_filtrado.head(5), use_container_width=True)
+    df_final = df_final.drop(columns=["Expectancy"])
 
-            st.caption(f"""
+    df_final = df_final.sort_values(
+        by=["Expectativa (%)", "Profit Factor", "Prob. gain (%)", "Trades"],
+        ascending=[False, False, False, False]
+    )
+
+    aba1, aba2 = st.tabs(["Ranking geral", "Base completa otimizada"])
+
+    with aba1:
+
+        st.subheader("Ranking dos ativos (melhor payoff estatístico por ativo)")
+
+        st.dataframe(
+            df_final.head(30),
+            use_container_width=True
+        )
+
+    with aba2:
+
+        st.subheader("Resultado completo – melhor combinação por ativo")
+
+        st.dataframe(
+            df_final,
+            use_container_width=True
+        )
+
+    st.caption(f"""
 Janela máxima: {MAX_DAYS} pregões
-Filtro obrigatório: Prob. Gain > Prob. Loss
-Classificação: expectativa, probabilidade de ganho e menor probabilidade de perda.
+Histórico: {YEARS_BACK} anos
+Filtro mínimo: trades >= {MIN_TRADES} e p_gain > p_loss
+Ranking por: expectativa, profit factor, probabilidade de ganho e número de trades.
+Grid testado:
+Gain = {', '.join([str(int(g*100))+'%' for g in GAIN_GRID])}
+Loss = {', '.join([str(l*100) for l in LOSS_GRID])}
 """)
