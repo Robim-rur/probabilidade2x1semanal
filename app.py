@@ -5,18 +5,15 @@ import numpy as np
 from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
-st.title("Scanner Estatístico – Otimização de Gain/Loss por Ativo")
+st.title("Ranking estatístico – melhor ativo hoje (com filtro EMA 69 no diário)")
 
-st.markdown("""
-Este aplicativo realiza uma busca automática pelo melhor par de
-gain (%) e loss (%) para cada ativo, maximizando a expectativa estatística
-em um horizonte de curto prazo.
-
-O modelo é totalmente estatístico e não utiliza setups gráficos.
-""")
+st.caption(
+    "Ranking estatístico de curto prazo (≈2 semanas) com filtro de tendência: "
+    "somente ativos com fechamento acima da EMA 69 no gráfico diário."
+)
 
 # ============================================================
-# LISTA FIXA DOS 178 ATIVOS
+# LISTA DOS ATIVOS
 # ============================================================
 
 ativos_scan = sorted(set([
@@ -42,14 +39,13 @@ ativos_scan = sorted(set([
 ]))
 
 # ============================================================
-# PARÂMETROS DO ESTUDO
+# PARÂMETROS
 # ============================================================
 
-MAX_DAYS = 10
+MAX_DAYS = 10        # ~ 2 semanas
 YEARS_BACK = 10
 MIN_TRADES = 60
 
-# Grid de busca
 GAIN_GRID = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
 LOSS_GRID = [0.005, 0.01, 0.015, 0.02, 0.03]
 
@@ -59,7 +55,28 @@ LOSS_GRID = [0.005, 0.01, 0.015, 0.02, 0.03]
 
 @st.cache_data(show_spinner=False)
 def baixar_dados(ticker, start, end):
-    return yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
+    return yf.download(
+        ticker,
+        start=start,
+        end=end,
+        progress=False,
+        auto_adjust=False
+    )
+
+def filtrar_ema69_diaria(df):
+
+    df = df.copy()
+
+    df["EMA69"] = df["Close"].ewm(span=69, adjust=False).mean()
+
+    if len(df) < 70:
+        return False
+
+    fechamento = df["Close"].iloc[-1]
+    ema = df["EMA69"].iloc[-1]
+
+    return fechamento > ema
+
 
 def simular(df, gain, loss):
 
@@ -107,21 +124,16 @@ def simular(df, gain, loss):
 
     p_win = wins / trades
     p_loss = losses / trades
-
     expectancy = p_win * gain - p_loss * loss
 
-    if p_loss > 0:
-        profit_factor = (p_win * gain) / (p_loss * loss)
-    else:
-        profit_factor = np.inf
+    return p_win, p_loss, expectancy, trades
 
-    return p_win, p_loss, expectancy, profit_factor, trades
 
 # ============================================================
 # EXECUÇÃO
 # ============================================================
 
-if st.button("Rodar otimização estatística"):
+if st.button("Gerar ranking (com filtro EMA 69 diário)"):
 
     end = datetime.today()
     start = end - timedelta(days=YEARS_BACK * 365)
@@ -138,7 +150,14 @@ if st.button("Rodar otimização estatística"):
             if df is None or len(df) < 150:
                 continue
 
-            df = df[["Open","High","Low","Close"]].dropna()
+            df = df[["Open", "High", "Low", "Close"]].dropna()
+
+            # ----------------------------
+            # FILTRO DE TENDÊNCIA
+            # EMA 69 NO DIÁRIO
+            # ----------------------------
+            if not filtrar_ema69_diaria(df):
+                continue
 
             dados[ticker] = df
 
@@ -147,7 +166,7 @@ if st.button("Rodar otimização estatística"):
 
         barra.progress((i + 1) / len(ativos_scan))
 
-    resultados_finais = []
+    resultados = []
 
     for ticker, df in dados.items():
 
@@ -164,72 +183,56 @@ if st.button("Rodar otimização estatística"):
                 if r is None:
                     continue
 
-                p_win, p_loss, expectancy, pf, trades = r
+                p_win, p_loss, expectancy, trades = r
 
                 if trades < MIN_TRADES:
                     continue
 
-                # filtro mínimo de sanidade
-                if p_win <= p_loss:
-                    continue
-
-                if melhor is None or expectancy > melhor["Expectancy"]:
-
+                if melhor is None or expectancy > melhor["expectancy"]:
                     melhor = {
                         "Ativo": ticker.replace(".SA", ""),
-                        "Melhor gain (%)": gain * 100,
-                        "Melhor loss (%)": loss * 100,
-                        "Prob. gain (%)": p_win * 100,
-                        "Prob. loss (%)": p_loss * 100,
-                        "Expectancy": expectancy,
-                        "Profit Factor": pf,
+                        "Gain (%)": gain * 100,
+                        "Loss (%)": loss * 100,
+                        "Prob gain em 2 semanas (%)": p_win * 100,
+                        "Prob loss em 2 semanas (%)": p_loss * 100,
+                        "expectancy": expectancy,
                         "Trades": trades
                     }
 
         if melhor is not None:
-            resultados_finais.append(melhor)
+            resultados.append(melhor)
 
-    if len(resultados_finais) == 0:
-        st.error("Nenhum ativo apresentou combinações estatísticas válidas.")
+    if len(resultados) == 0:
+        st.error("Nenhum ativo passou pelo filtro da EMA 69 diária e critérios estatísticos.")
         st.stop()
 
-    df_final = pd.DataFrame(resultados_finais)
+    df = pd.DataFrame(resultados)
 
-    df_final["Expectativa (%)"] = df_final["Expectancy"] * 100
-
-    df_final = df_final.drop(columns=["Expectancy"])
-
-    df_final = df_final.sort_values(
-        by=["Expectativa (%)", "Profit Factor", "Prob. gain (%)", "Trades"],
-        ascending=[False, False, False, False]
+    df = df.sort_values(
+        by=["expectancy", "Prob gain em 2 semanas (%)", "Trades"],
+        ascending=[False, False, False]
     )
 
-    aba1, aba2 = st.tabs(["Ranking geral", "Base completa otimizada"])
+    melhor_ativo = df.iloc[0]
 
-    with aba1:
+    st.success(
+        f'''Melhor ativo hoje para abrir operação (filtrado pela EMA 69 no diário): {melhor_ativo["Ativo"]}
 
-        st.subheader("Ranking dos ativos (melhor payoff estatístico por ativo)")
+Gain: {melhor_ativo["Gain (%)"]:.2f}%
+Loss: {melhor_ativo["Loss (%)"]:.2f}%
 
-        st.dataframe(
-            df_final.head(30),
-            use_container_width=True
-        )
+Em até aproximadamente 2 semanas:
+Probabilidade de gain: {melhor_ativo["Prob gain em 2 semanas (%)"]:.1f}%
+Probabilidade de loss: {melhor_ativo["Prob loss em 2 semanas (%)"]:.1f}%'''
+    )
 
-    with aba2:
+    st.subheader("Ranking completo – do melhor para o pior")
 
-        st.subheader("Resultado completo – melhor combinação por ativo")
+    df_exibicao = df.drop(columns=["expectancy"])
 
-        st.dataframe(
-            df_final,
-            use_container_width=True
-        )
+    st.dataframe(df_exibicao, use_container_width=True)
 
-    st.caption(f"""
-Janela máxima: {MAX_DAYS} pregões
-Histórico: {YEARS_BACK} anos
-Filtro mínimo: trades >= {MIN_TRADES} e p_gain > p_loss
-Ranking por: expectativa, profit factor, probabilidade de ganho e número de trades.
-Grid testado:
-Gain = {', '.join([str(int(g*100))+'%' for g in GAIN_GRID])}
-Loss = {', '.join([str(l*100) for l in LOSS_GRID])}
-""")
+    st.caption(
+        "Ranking estatístico condicionado ao filtro de tendência: fechamento acima da EMA 69 no gráfico diário. "
+        "Janela máxima de 10 pregões (~2 semanas)."
+    )
