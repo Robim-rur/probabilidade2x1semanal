@@ -5,7 +5,12 @@ import numpy as np
 from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
-st.title("Ranking estatístico – melhor ativo hoje (janela ~2 semanas)")
+st.title("Ranking estatístico – maior probabilidade de gain (≈ 2 semanas)")
+
+st.caption(
+    "Ranking estatístico de curto prazo priorizando a MAIOR probabilidade de gain. "
+    "Somente combinações onde a probabilidade de gain é maior que a de loss são consideradas."
+)
 
 # ============================================================
 # LISTA DOS ATIVOS
@@ -37,7 +42,7 @@ ativos_scan = sorted(set([
 # PARÂMETROS
 # ============================================================
 
-MAX_DAYS = 10   # ~ 2 semanas
+MAX_DAYS = 10
 YEARS_BACK = 10
 MIN_TRADES = 60
 
@@ -51,6 +56,7 @@ LOSS_GRID = [0.005, 0.01, 0.015, 0.02, 0.03]
 @st.cache_data(show_spinner=False)
 def baixar_dados(ticker, start, end):
     return yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
+
 
 def simular(df, gain, loss):
 
@@ -107,7 +113,7 @@ def simular(df, gain, loss):
 # EXECUÇÃO
 # ============================================================
 
-if st.button("Gerar ranking de hoje (~2 semanas)"):
+if st.button("Gerar ranking (priorizando probabilidade de gain)"):
 
     end = datetime.today()
     start = end - timedelta(days=YEARS_BACK * 365)
@@ -124,7 +130,8 @@ if st.button("Gerar ranking de hoje (~2 semanas)"):
             if df is None or len(df) < 150:
                 continue
 
-            df = df[["Open","High","Low","Close"]].dropna()
+            df = df[["Open", "High", "Low", "Close"]].dropna()
+
             dados[ticker] = df
 
         except:
@@ -154,9 +161,13 @@ if st.button("Gerar ranking de hoje (~2 semanas)"):
                 if trades < MIN_TRADES:
                     continue
 
-                if melhor is None or expectancy > melhor["expectancy"]:
+                # REGRA NOVA
+                if p_win <= p_loss:
+                    continue
+
+                if melhor is None:
                     melhor = {
-                        "Ativo": ticker.replace(".SA",""),
+                        "Ativo": ticker.replace(".SA", ""),
                         "Gain (%)": gain * 100,
                         "Loss (%)": loss * 100,
                         "Prob gain em 2 semanas (%)": p_win * 100,
@@ -164,19 +175,40 @@ if st.button("Gerar ranking de hoje (~2 semanas)"):
                         "expectancy": expectancy,
                         "Trades": trades
                     }
+                else:
+                    if p_win > melhor["Prob gain em 2 semanas (%)"] / 100:
+                        melhor = {
+                            "Ativo": ticker.replace(".SA", ""),
+                            "Gain (%)": gain * 100,
+                            "Loss (%)": loss * 100,
+                            "Prob gain em 2 semanas (%)": p_win * 100,
+                            "Prob loss em 2 semanas (%)": p_loss * 100,
+                            "expectancy": expectancy,
+                            "Trades": trades
+                        }
+                    elif np.isclose(p_win, melhor["Prob gain em 2 semanas (%)"] / 100) and expectancy > melhor["expectancy"]:
+                        melhor = {
+                            "Ativo": ticker.replace(".SA", ""),
+                            "Gain (%)": gain * 100,
+                            "Loss (%)": loss * 100,
+                            "Prob gain em 2 semanas (%)": p_win * 100,
+                            "Prob loss em 2 semanas (%)": p_loss * 100,
+                            "expectancy": expectancy,
+                            "Trades": trades
+                        }
 
         if melhor is not None:
             resultados.append(melhor)
 
     if len(resultados) == 0:
-        st.error("Nenhum ativo apresentou resultado válido.")
+        st.error("Nenhum ativo apresentou probabilidade de gain maior que a de loss.")
         st.stop()
 
     df = pd.DataFrame(resultados)
 
     df = df.sort_values(
-        by=["expectancy","Prob gain em 2 semanas (%)","Trades"],
-        ascending=[False, False, False]
+        by=["Prob gain em 2 semanas (%)", "Prob loss em 2 semanas (%)", "expectancy"],
+        ascending=[False, True, False]
     )
 
     melhor_ativo = df.iloc[0]
@@ -192,10 +224,14 @@ Probabilidade de gain: {melhor_ativo["Prob gain em 2 semanas (%)"]:.1f}%
 Probabilidade de loss: {melhor_ativo["Prob loss em 2 semanas (%)"]:.1f}%'''
     )
 
-    st.subheader("Ranking completo – do melhor para o pior")
+    st.subheader("Ranking – maior probabilidade de gain (do melhor para o pior)")
 
     df_exibicao = df.drop(columns=["expectancy"])
 
     st.dataframe(df_exibicao, use_container_width=True)
 
-    st.caption("Ranking puramente estatístico. Janela máxima de 10 pregões (~2 semanas).")
+    st.caption(
+        "Ranking estatístico priorizando probabilidade de gain. "
+        "Somente combinações com P(gain) > P(loss). "
+        "Janela máxima de 10 pregões (~2 semanas)."
+    )
