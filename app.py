@@ -5,12 +5,7 @@ import numpy as np
 from datetime import datetime, timedelta
 
 st.set_page_config(layout="wide")
-st.title("Ranking estatístico – melhor ativo hoje (com filtro EMA 69 no diário)")
-
-st.caption(
-    "Ranking estatístico de curto prazo (≈2 semanas) com filtro de tendência: "
-    "somente ativos com fechamento acima da EMA 69 no gráfico diário."
-)
+st.title("Ranking estatístico – melhor ativo hoje (janela ~2 semanas)")
 
 # ============================================================
 # LISTA DOS ATIVOS
@@ -42,7 +37,7 @@ ativos_scan = sorted(set([
 # PARÂMETROS
 # ============================================================
 
-MAX_DAYS = 10        # ~ 2 semanas
+MAX_DAYS = 10   # ~ 2 semanas
 YEARS_BACK = 10
 MIN_TRADES = 60
 
@@ -55,28 +50,7 @@ LOSS_GRID = [0.005, 0.01, 0.015, 0.02, 0.03]
 
 @st.cache_data(show_spinner=False)
 def baixar_dados(ticker, start, end):
-    return yf.download(
-        ticker,
-        start=start,
-        end=end,
-        progress=False,
-        auto_adjust=False
-    )
-
-def filtrar_ema69_diaria(df):
-
-    df = df.copy()
-
-    df["EMA69"] = df["Close"].ewm(span=69, adjust=False).mean()
-
-    if len(df) < 70:
-        return False
-
-    fechamento = df["Close"].iloc[-1]
-    ema = df["EMA69"].iloc[-1]
-
-    return fechamento > ema
-
+    return yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
 
 def simular(df, gain, loss):
 
@@ -133,7 +107,7 @@ def simular(df, gain, loss):
 # EXECUÇÃO
 # ============================================================
 
-if st.button("Gerar ranking (com filtro EMA 69 diário)"):
+if st.button("Gerar ranking de hoje (~2 semanas)"):
 
     end = datetime.today()
     start = end - timedelta(days=YEARS_BACK * 365)
@@ -150,15 +124,7 @@ if st.button("Gerar ranking (com filtro EMA 69 diário)"):
             if df is None or len(df) < 150:
                 continue
 
-            df = df[["Open", "High", "Low", "Close"]].dropna()
-
-            # ----------------------------
-            # FILTRO DE TENDÊNCIA
-            # EMA 69 NO DIÁRIO
-            # ----------------------------
-            if not filtrar_ema69_diaria(df):
-                continue
-
+            df = df[["Open","High","Low","Close"]].dropna()
             dados[ticker] = df
 
         except:
@@ -190,7 +156,7 @@ if st.button("Gerar ranking (com filtro EMA 69 diário)"):
 
                 if melhor is None or expectancy > melhor["expectancy"]:
                     melhor = {
-                        "Ativo": ticker.replace(".SA", ""),
+                        "Ativo": ticker.replace(".SA",""),
                         "Gain (%)": gain * 100,
                         "Loss (%)": loss * 100,
                         "Prob gain em 2 semanas (%)": p_win * 100,
@@ -203,20 +169,20 @@ if st.button("Gerar ranking (com filtro EMA 69 diário)"):
             resultados.append(melhor)
 
     if len(resultados) == 0:
-        st.error("Nenhum ativo passou pelo filtro da EMA 69 diária e critérios estatísticos.")
+        st.error("Nenhum ativo apresentou resultado válido.")
         st.stop()
 
     df = pd.DataFrame(resultados)
 
     df = df.sort_values(
-        by=["expectancy", "Prob gain em 2 semanas (%)", "Trades"],
+        by=["expectancy","Prob gain em 2 semanas (%)","Trades"],
         ascending=[False, False, False]
     )
 
     melhor_ativo = df.iloc[0]
 
     st.success(
-        f'''Melhor ativo hoje para abrir operação (filtrado pela EMA 69 no diário): {melhor_ativo["Ativo"]}
+        f'''Melhor ativo hoje para abrir operação: {melhor_ativo["Ativo"]}
 
 Gain: {melhor_ativo["Gain (%)"]:.2f}%
 Loss: {melhor_ativo["Loss (%)"]:.2f}%
@@ -232,7 +198,4 @@ Probabilidade de loss: {melhor_ativo["Prob loss em 2 semanas (%)"]:.1f}%'''
 
     st.dataframe(df_exibicao, use_container_width=True)
 
-    st.caption(
-        "Ranking estatístico condicionado ao filtro de tendência: fechamento acima da EMA 69 no gráfico diário. "
-        "Janela máxima de 10 pregões (~2 semanas)."
-    )
+    st.caption("Ranking puramente estatístico. Janela máxima de 10 pregões (~2 semanas).")
