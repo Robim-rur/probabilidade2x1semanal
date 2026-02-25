@@ -7,7 +7,7 @@ st.set_page_config(layout="wide")
 st.title("Detector de Regime Operável – Setup Principal e SAR")
 
 # ==========================================================
-# LISTA DE ATIVOS (178)
+# LISTA DE ATIVOS
 # ==========================================================
 
 ativos_scan = sorted(set([
@@ -39,12 +39,6 @@ ativos_scan = sorted(set([
 def ema(series, n):
     return series.ewm(span=n, adjust=False).mean()
 
-def stochastic_k(df, n=14, smooth=3):
-    low = df['Low'].rolling(n).min()
-    high = df['High'].rolling(n).max()
-    k = 100 * (df['Close'] - low) / (high - low)
-    return k.rolling(smooth).mean()
-
 def dmi_adx(df, n=14):
 
     up = df['High'].diff()
@@ -54,19 +48,26 @@ def dmi_adx(df, n=14):
     minus_dm = np.where((down > up) & (down > 0), down, 0.0)
 
     tr1 = df['High'] - df['Low']
-    tr2 = abs(df['High'] - df['Close'].shift())
-    tr3 = abs(df['Low'] - df['Close'].shift())
+    tr2 = (df['High'] - df['Close'].shift()).abs()
+    tr3 = (df['Low'] - df['Close'].shift()).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
     atr = tr.rolling(n).mean()
 
-    plus_di = 100 * pd.Series(plus_dm).rolling(n).mean() / atr
-    minus_di = 100 * pd.Series(minus_dm).rolling(n).mean() / atr
+    plus_dm = pd.Series(plus_dm, index=df.index)
+    minus_dm = pd.Series(minus_dm, index=df.index)
 
-    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+    plus_di = 100 * plus_dm.rolling(n).mean() / atr
+    minus_di = 100 * minus_dm.rolling(n).mean() / atr
+
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
     adx = dx.rolling(n).mean()
 
-    return plus_di.values, minus_di.values, adx.values
+    return plus_di, minus_di, adx
+
+# ==========================================================
+# SAR PARABÓLICO (IMPLEMENTAÇÃO CORRIGIDA)
+# ==========================================================
 
 def parabolic_sar(df, step=0.02, max_step=0.2):
 
@@ -76,15 +77,16 @@ def parabolic_sar(df, step=0.02, max_step=0.2):
     sar = np.zeros(len(df))
     trend = 1
     af = step
+
     ep = high[0]
     sar[0] = low[0]
 
     for i in range(1, len(df)):
 
-        prev_sar = sar[i-1]
+        sar[i] = sar[i-1] + af * (ep - sar[i-1])
 
         if trend == 1:
-            sar[i] = prev_sar + af * (ep - prev_sar)
+
             sar[i] = min(sar[i], low[i-1], low[i])
 
             if high[i] > ep:
@@ -98,7 +100,7 @@ def parabolic_sar(df, step=0.02, max_step=0.2):
                 af = step
 
         else:
-            sar[i] = prev_sar + af * (ep - prev_sar)
+
             sar[i] = max(sar[i], high[i-1], high[i])
 
             if low[i] < ep:
@@ -111,7 +113,7 @@ def parabolic_sar(df, step=0.02, max_step=0.2):
                 ep = high[i]
                 af = step
 
-    return sar
+    return pd.Series(sar, index=df.index)
 
 # ==========================================================
 # PROCESSAMENTO
@@ -129,14 +131,16 @@ def processar():
     for ticker in ativos_scan:
 
         try:
+
             df = yf.download(ticker, period="12y", interval="1d", progress=False)
-            if len(df) < 300:
+
+            if df is None or len(df) < 300:
                 continue
 
             df = df.dropna()
 
             df['EMA69'] = ema(df['Close'], 69)
-            df['STO'] = stochastic_k(df)
+
             pdi, mdi, adx = dmi_adx(df)
 
             df['PDI'] = pdi
@@ -146,10 +150,9 @@ def processar():
             df['SAR'] = parabolic_sar(df)
 
             weekly = df.resample('W-FRI').last()
-            weekly['EMA69'] = ema(weekly['Close'], 69)
-            weekly = weekly[['EMA69']]
+            weekly['EMA69_W'] = ema(weekly['Close'], 69)
 
-            df = df.merge(weekly, left_index=True, right_index=True, how='left', suffixes=('', '_W'))
+            df = df.merge(weekly[['EMA69_W']], left_index=True, right_index=True, how='left')
             df['EMA69_W'] = df['EMA69_W'].ffill()
 
             df['setup_principal'] = (
@@ -166,7 +169,7 @@ def processar():
 
             df['ret_futuro'] = df['Close'].shift(-10) / df['Close'] - 1
 
-            for i in range(len(df)-10):
+            for i in range(len(df) - 10):
 
                 if df['setup_principal'].iloc[i]:
                     registros_setup.append(df['ret_futuro'].iloc[i])
@@ -186,20 +189,20 @@ def processar():
     return registros_setup, registros_sar, hoje_setup, hoje_sar
 
 with st.spinner("Processando histórico..."):
-
     reg_setup, reg_sar, hoje_setup, hoje_sar = processar()
 
 def resumo(reg):
 
     if len(reg) == 0:
-        return 0,0,0
+        return 0, 0, 0
 
-    reg = pd.Series(reg).dropna()
-    win = (reg > 0).mean() * 100
-    ret_medio = reg.mean() * 100
-    dd_medio = reg[reg < 0].mean() * 100 if (reg < 0).any() else 0
+    s = pd.Series(reg).dropna()
 
-    return win, ret_medio, dd_medio
+    win = (s > 0).mean() * 100
+    ret_medio = s.mean() * 100
+    perda_media = s[s < 0].mean() * 100 if (s < 0).any() else 0
+
+    return win, ret_medio, perda_media
 
 win_s, ret_s, dd_s = resumo(reg_setup)
 win_sar, ret_sar, dd_sar = resumo(reg_sar)
@@ -213,7 +216,6 @@ with col1:
     st.metric("Retorno médio", f"{ret_s:.2f}%")
     st.metric("Perda média", f"{dd_s:.2f}%")
     st.metric("Ativos em condição hoje", len(hoje_setup))
-
     st.dataframe(pd.DataFrame({"Ativos": hoje_setup}), use_container_width=True)
 
 with col2:
@@ -223,12 +225,9 @@ with col2:
     st.metric("Retorno médio", f"{ret_sar:.2f}%")
     st.metric("Perda média", f"{dd_sar:.2f}%")
     st.metric("Ativos em condição hoje", len(hoje_sar))
-
     st.dataframe(pd.DataFrame({"Ativos": hoje_sar}), use_container_width=True)
 
 st.markdown("---")
-
-st.subheader("Diagnóstico de regime (objetivo do app)")
 
 def regime(win):
 
@@ -239,19 +238,15 @@ def regime(win):
     else:
         return "REGIME DESFAVORÁVEL"
 
+st.subheader("Diagnóstico de regime")
+
 st.write("Setup principal:", regime(win_s))
 st.write("Setup SAR:", regime(win_sar))
 
 st.info(
 """
 Este app não gera sinal de entrada.
-
-Ele mede, estatisticamente, se o AMBIENTE atual favorece:
-• o seu setup principal
-• e o setup baseado em SAR
-
-Com base no histórico:
-quanto maior a probabilidade de ganho dos setups,
-mais favorável é o regime para você operar.
+Ele mede se o ambiente favorece o seu setup principal
+e o setup com SAR parabólico, usando horizonte de 10 pregões.
 """
 )
